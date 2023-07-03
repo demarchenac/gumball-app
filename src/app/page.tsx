@@ -6,6 +6,7 @@ export default function Home() {
     host: env.DATABASE_HOST,
     pwd: env.DATABASE_PASSWORD,
     user: env.DATABASE_USERNAME,
+    url: env.DATABASE_URL,
   };
 
   console.log("only on server");
