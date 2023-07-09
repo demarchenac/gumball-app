@@ -1,20 +1,7 @@
 module.exports = {
-  $schema: 'https://json.schemastore.org/eslintrc',
-  extends: ['next/core-web-vitals', 'prettier', 'plugin:tailwindcss/recommended'],
-  plugins: ['tailwindcss'],
-  settings: {
-    tailwindcss: {
-      callees: ['cn'],
-      config: 'tailwind.config.cjs',
-    },
-    next: {
-      rootDir: true,
-    },
+  extends: 'next/core-web-vitals',
+  rules: {
+    'no-console': ['warn'],
+    'no-unused-vars': ['warn'],
   },
-  overrides: [
-    {
-      files: ['*.ts', '*.tsx'],
-      parser: '@typescript-eslint/parser',
-    },
-  ],
 };
