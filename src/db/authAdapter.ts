@@ -1,3 +1,6 @@
+// extracted from: https://github.com/nextauthjs/next-auth/blob/92383d5254c95910a87fb28908a6a3a8da295ae7/packages/adapter-drizzle/src/planetscale/index.ts
+// PR for Next-Auth Drizzle orm adapter: https://github.com/nextauthjs/next-auth/pull/7165/files#diff-b1982f739da45cd0423326505822276eb5439a07e0b08659d3148dfc8c0e847b
+
 import { and, eq } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import type { Adapter } from 'next-auth/adapters';
@@ -11,8 +14,10 @@ export type DefaultSchema = typeof defaultSchema;
 //needs to be extensible
 interface CustomSchema extends DefaultSchema {}
 
-/** @return { import("next-auth/adapters").Adapter } */
-export function DrizzleDBAdapter(client: DBClient, schema?: Partial<CustomSchema>): Adapter {
+export function DrizzleWithPlanetScaleAdapter(
+  client: DBClient,
+  schema?: Partial<CustomSchema>
+): Adapter {
   const { users, accounts, sessions, verificationTokens } = {
     users: schema?.users ?? defaultSchema.users,
     accounts: schema?.accounts ?? defaultSchema.accounts,
@@ -21,148 +26,177 @@ export function DrizzleDBAdapter(client: DBClient, schema?: Partial<CustomSchema
   };
 
   return {
-    async createUser(user) {
-      const matches = await client.select().from(users).where(eq(users.email, user.email));
-      if (matches && matches[0]) {
-        return matches[0];
-      }
+    createUser: async (data) => {
+      const id = nanoid(); // changed crypto.randomUUID for nanoid.
 
-      const id = nanoid();
-      await client.insert(users).values({ ...user, id });
+      await client.insert(users).values({ ...data, id });
 
-      const newUser = await client.select().from(users).where(eq(users.id, id));
-      return newUser[0];
-    },
-
-    async getUser(id) {
-      const matches = await client.select().from(users).where(eq(users.id, id));
-      return matches?.[0] ?? null;
-    },
-
-    async getUserByEmail(email) {
-      const matches = await client.select().from(users).where(eq(users.email, email));
-      return matches?.[0] ?? null;
-    },
-
-    async getUserByAccount({ providerAccountId, provider }) {
-      const matches = await client
+      return client
         .select()
-        .from(accounts)
-        .where(
-          and(eq(accounts.providerAccountId, providerAccountId), eq(accounts.provider, provider))
-        )
-        .leftJoin(users, eq(accounts.userId, users.id));
-
-      return matches?.[0]?.users ?? null;
+        .from(users)
+        .where(eq(users.id, id))
+        .then((res) => res[0]);
     },
 
-    async updateUser(user) {
-      if (!user.id) {
+    getUser: async (data) => {
+      return (
+        client
+          .select()
+          .from(users)
+          .where(eq(users.id, data))
+          .then((res) => res[0]) ?? null
+      );
+    },
+
+    getUserByEmail: async (data) => {
+      return (
+        client
+          .select()
+          .from(users)
+          .where(eq(users.email, data))
+          .then((res) => res[0]) ?? null
+      );
+    },
+
+    createSession: async (data) => {
+      await client.insert(sessions).values(data);
+
+      return client
+        .select()
+        .from(sessions)
+        .where(eq(sessions.sessionToken, data.sessionToken))
+        .then((res) => res[0]);
+    },
+
+    getSessionAndUser: async (data) => {
+      return (
+        client
+          .select({
+            session: sessions,
+            user: users,
+          })
+          .from(sessions)
+          .where(eq(sessions.sessionToken, data))
+          .innerJoin(users, eq(users.id, sessions.userId))
+          .then((res) => res[0]) ?? null
+      );
+    },
+
+    updateUser: async (data) => {
+      if (!data.id) {
         throw new Error('No user id.');
       }
 
-      await client.update(users).set(user).where(eq(users.id, user.id));
+      await client.update(users).set(data).where(eq(users.id, data.id));
 
-      const matches = await client.select().from(users).where(eq(users.id, user.id));
-      return matches?.[0] ?? null;
+      return client
+        .select()
+        .from(users)
+        .where(eq(users.id, data.id))
+        .then((res) => res[0]);
     },
 
-    async deleteUser(userId) {
+    updateSession: async (data) => {
+      await client.update(sessions).set(data).where(eq(sessions.sessionToken, data.sessionToken));
+
+      return client
+        .select()
+        .from(sessions)
+        .where(eq(sessions.sessionToken, data.sessionToken))
+        .then((res) => res[0]);
+    },
+
+    linkAccount: async (rawAccount) => {
+      await client
+        .insert(accounts)
+        .values(rawAccount)
+        .then((res) => res.rows[0]);
+    },
+
+    getUserByAccount: async (account) => {
+      const dbAccount = await client
+        .select()
+        .from(accounts)
+        .where(
+          and(
+            eq(accounts.providerAccountId, account.providerAccountId),
+            eq(accounts.provider, account.provider)
+          )
+        )
+        .leftJoin(users, eq(accounts.userId, users.id))
+        .then((res) => res[0]);
+
+      // fixes: If user already exists but has no linked oauth account and tries to sign in
+      // source: https://github.com/nextauthjs/next-auth/pull/7165/files/e3dd9f4ed158390ce79278f273d8ae559ba42078#r1227254279
+      if (!dbAccount) return null;
+
+      return dbAccount.users;
+    },
+
+    deleteSession: async (sessionToken) => {
+      await client.delete(sessions).where(eq(sessions.sessionToken, sessionToken));
+    },
+
+    createVerificationToken: async (token) => {
+      await client.insert(verificationTokens).values(token);
+
+      return client
+        .select()
+        .from(verificationTokens)
+        .where(eq(verificationTokens.identifier, token.identifier))
+        .then((res) => res[0]);
+    },
+
+    useVerificationToken: async (token) => {
+      try {
+        const deletedToken =
+          (await client
+            .select()
+            .from(verificationTokens)
+            .where(
+              and(
+                eq(verificationTokens.identifier, token.identifier),
+                eq(verificationTokens.token, token.token)
+              )
+            )
+            .then((res) => res[0])) ?? null;
+
+        await client
+          .delete(verificationTokens)
+          .where(
+            and(
+              eq(verificationTokens.identifier, token.identifier),
+              eq(verificationTokens.token, token.token)
+            )
+          );
+
+        return deletedToken;
+      } catch (err) {
+        throw new Error('No verification token found.');
+      }
+    },
+
+    deleteUser: async (id) => {
       await Promise.all([
-        client.delete(users).where(eq(users.id, userId)),
-        client.delete(sessions).where(eq(sessions.userId, userId)),
-        client.delete(accounts).where(eq(accounts.userId, userId)),
+        client.delete(users).where(eq(users.id, id)),
+        client.delete(sessions).where(eq(sessions.userId, id)),
+        client.delete(accounts).where(eq(accounts.userId, id)),
       ]);
 
-      return;
+      return null;
     },
 
-    async linkAccount(account) {
-      await client.insert(accounts).values(account);
-      return;
-    },
-
-    async unlinkAccount({ providerAccountId, provider }) {
+    unlinkAccount: async (account) => {
       await client
         .delete(accounts)
         .where(
-          and(eq(accounts.providerAccountId, providerAccountId), eq(accounts.provider, provider))
+          and(
+            eq(accounts.providerAccountId, account.providerAccountId),
+            eq(accounts.provider, account.provider)
+          )
         );
 
-      return;
-    },
-
-    async createSession({ sessionToken, userId, expires }) {
-      const matches = await client
-        .select()
-        .from(sessions)
-        .where(eq(sessions.sessionToken, sessionToken));
-
-      return matches?.[0] ?? null;
-    },
-
-    async getSessionAndUser(sessionToken) {
-      const matches = await client
-        .select({ session: sessions, user: users })
-        .from(sessions)
-        .where(eq(sessions.sessionToken, sessionToken))
-        .innerJoin(users, eq(users.id, sessions.userId));
-
-      return matches?.[0] ?? null;
-    },
-
-    async updateSession(session) {
-      await client
-        .update(sessions)
-        .set(session)
-        .where(eq(sessions.sessionToken, session.sessionToken));
-
-      const matches = await client
-        .select()
-        .from(sessions)
-        .where(eq(sessions.sessionToken, session.sessionToken));
-
-      return matches?.[0] ?? null;
-    },
-
-    async deleteSession(sessionToken) {
-      await client.delete(sessions).where(eq(sessions.sessionToken, sessionToken));
-
-      return;
-    },
-
-    async createVerificationToken({ identifier, expires, token }) {
-      await client.insert(verificationTokens).values({ identifier, expires, token });
-
-      const matches = await client
-        .select()
-        .from(verificationTokens)
-        .where(eq(verificationTokens.identifier, identifier));
-
-      return matches?.[0] ?? null;
-    },
-
-    async useVerificationToken({ identifier, token }) {
-      const matches = await client
-        .select()
-        .from(verificationTokens)
-        .where(
-          and(eq(verificationTokens.identifier, identifier), eq(verificationTokens.token, token))
-        );
-
-      const tokenToDelete = matches[0] ?? null;
-
-      if (!tokenToDelete) {
-        return null;
-      }
-
-      await client
-        .delete(verificationTokens)
-        .where(
-          and(eq(verificationTokens.identifier, identifier), eq(verificationTokens.token, token))
-        );
-
-      return tokenToDelete;
+      return undefined;
     },
   };
 }
