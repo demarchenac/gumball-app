@@ -2,7 +2,7 @@ import '@/styles/globals.css';
 
 import { Inter } from 'next/font/google';
 
-import { cn } from '@/lib/tailwind/merge';
+import { cn } from '@/lib/shadcn-ui/utils';
 import { Navbar } from '@/components/Navbar';
 
 const inter = Inter({ subsets: ['latin'] });
